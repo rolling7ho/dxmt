@@ -34,7 +34,9 @@ else
   error('One of the options -Dwine_build_path or -Dwine_install_path is required')
 endif
 
-winemetal_dll = shared_library('winemetal', winemetal_src,
+winemetal_name = get_option('winemetal_name')
+
+winemetal_dll = shared_library(winemetal_name, winemetal_src,
   name_prefix         : '',
   dependencies        : [ lib_winecrt0, lib_ntdll, lib_dbghelp, airconv_forward_dep ],
   include_directories : dxmt_include_path,
@@ -51,7 +53,7 @@ winemetal_dep = declare_dependency(
 
 custom_target('postprocess_lib',
   input : winemetal_dll,
-  output: 'winemetal.dll.postproc',
+  output: winemetal_name + '.dll.postproc',
   command : [ winebuild, '--builtin', '@INPUT@' ],
   depends : winemetal_dll,
   build_by_default : true

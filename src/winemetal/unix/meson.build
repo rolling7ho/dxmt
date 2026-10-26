@@ -14,7 +14,7 @@ else
 endif
 
 winemetal_unix_ld_args = [
-  '-Wl,-install_name,@rpath/winemetal.so',
+  '-Wl,-install_name,@rpath/' + winemetal_name + '.so',
   winemac_so, ntdll_so,
   '-weak_framework', 'CoreFoundation', '-weak_framework', 'Metal',
   '-framework', 'MetalFX', '-weak_framework', 'Foundation',
@@ -24,7 +24,7 @@ winemetal_unix_ld_args = [
 ]
 winemetal_unix_link_depends = []
 
-shared_library('winemetal', winemetal_unix_src,
+shared_library(winemetal_name, winemetal_unix_src,
   name_prefix         : '',
   dependencies        : [ airconv_dep_darwin ],
   include_directories : dxmt_include_path,
@@ -38,6 +38,6 @@ shared_library('winemetal', winemetal_unix_src,
 )
 
 meson.add_install_script(
-  'install.sh', get_option('strip').to_string(), unix_install_dir, 
+  'install.sh', get_option('strip').to_string(), unix_install_dir, winemetal_name,
   install_tag: 'runtime'
 )
