@@ -36,6 +36,8 @@ struct EncoderData {
   EncoderType type;
   EncoderData *next = nullptr;
   uint64_t id;
+  // the compute prepass that encodes this pass's indirect commands, if any
+  EncoderData *depends_on = nullptr;
 };
 
 struct ClearEncoderData : EncoderData {

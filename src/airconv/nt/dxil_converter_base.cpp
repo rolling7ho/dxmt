@@ -2022,8 +2022,13 @@ Converter::EmitTertiary(const CallInst &Call) {
     return C.takeError();
 
   switch (auto OpId = *Op) {
-  case kOpFMad:
+  case kOpFMad: {
+    // mad may be fused unless the shader marked it precise
+    llvm::IRBuilder<>::FastMathFlagGuard Guard(ir);
+    if (!Call.getMetadata("dx.precise"))
+      ir.setFastMathFlags(llvm::FastMathFlags::getFast());
     return ir.CreateFAdd(ir.CreateFMul(*A, *B), *C);
+  }
   case kOpFma:
     return air.CreateFMA(*A, *B, *C);
   case kOpIMad:

@@ -223,6 +223,7 @@ public:
     compute->cmd_head.type = WMTComputeCommandNop;
     compute->cmd_head.next.set(0);
     compute->cmd_tail = (wmtcmd_base *)&compute->cmd_head;
+    encoder_current->depends_on = compute;
     // the current pass isn't linked yet, so this lands before it
     encoder_last->next = compute;
     encoder_last = compute;

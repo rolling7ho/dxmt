@@ -28,6 +28,67 @@
 
 namespace dxmt {
 namespace {
+// A full clear right before a render pass that loads the same target becomes that pass's
+// load action: one pass instead of two, and the target isn't written out and read back.
+bool FoldClearInto(ClearEncoderData *clear, RenderEncoderData *render) {
+  if (clear->width != render->render_target_width || clear->height != render->render_target_height ||
+      clear->array_length != render->render_target_array_length)
+    return false;
+  auto view = clear->attachment.ptr();
+  if (!clear->clear_dsv) {
+    for (auto &color : render->colors) {
+      if (color.attachment.ptr() != view)
+        continue;
+      if (color.load_action != WMTLoadActionLoad || color.level || color.slice ||
+          color.depth_plane != clear->depth_plane)
+        return false;
+      color.load_action = WMTLoadActionClear;
+      color.clear_color = clear->color;
+      return true;
+    }
+    return false;
+  }
+  bool depth = clear->clear_dsv & 1, stencil = clear->clear_dsv & 2;
+  if (depth && (render->depth.attachment.ptr() != view || render->depth.load_action != WMTLoadActionLoad ||
+                render->depth.level || render->depth.slice))
+    return false;
+  if (stencil && (render->stencil.attachment.ptr() != view || render->stencil.load_action != WMTLoadActionLoad ||
+                  render->stencil.level || render->stencil.slice))
+    return false;
+  if (depth) {
+    render->depth.load_action = WMTLoadActionClear;
+    render->depth.clear_depth = clear->depth_stencil.first;
+  }
+  if (stencil) {
+    render->stencil.load_action = WMTLoadActionClear;
+    render->stencil.clear_stencil = clear->depth_stencil.second;
+  }
+  return true;
+}
+
+void FoldClears(EncoderData *entry) {
+  static const bool enabled = env::getEnvVar("DXMT_FOLD_CLEARS") != "0";
+  if (!enabled)
+    return;
+  for (auto pass = entry; pass; pass = pass->next) {
+    if (pass->type != EncoderType::Clear)
+      continue;
+    // the next pass that does something, past other clears and a render pass's indirect-command prepass
+    EncoderData *next = pass->next;
+    while (next && (next->type == EncoderType::Null || next->type == EncoderType::Clear ||
+                    (next->type == EncoderType::Compute && next->next && next->next->type == EncoderType::Render &&
+                     next->next->depends_on == next)))
+      next = next->next;
+    if (next && next->type == EncoderType::Render &&
+        FoldClearInto(static_cast<ClearEncoderData *>(pass), static_cast<RenderEncoderData *>(next)))
+      pass->type = EncoderType::Null;
+  }
+}
+} // namespace
+} // namespace dxmt
+
+namespace dxmt {
+namespace {
 // DXMT_DRAWSTATS=1: every 10 seconds, logs draws per pixel shader and draw kind.
 void RecordDrawStat(uint64_t ps, std::string kind, uint64_t draws, uint64_t instances) {
   static const bool enabled = env::getEnvVar("DXMT_DRAWSTATS") == "1";
@@ -285,6 +346,7 @@ public:
     HRESULT hr = allocator_->EndRecord(&encoder_count);
     if (FAILED(hr))
       return hr;
+    FoldClears(entry);
     // Encoding now overlaps with the GPU's current work instead of delaying the next submission.
     static const bool preencode = env::getEnvVar("DXMT_PREENCODE") != "0";
     if (preencode)
