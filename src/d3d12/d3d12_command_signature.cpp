@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include <cstring>
 #include "com/com_pointer.hpp"
 #include "d3d12_device.hpp"
 #include "d3d12_pageable.hpp"
@@ -327,6 +328,23 @@ public:
     source << "}\n"
               "};\n";
 
+    if (!is_compute) {
+      // The same commands as a kernel with one thread per command. The loop body is
+      // reused as is: its `continue` leaves the do-while.
+      std::string vertex_source = source.str();
+      auto body_start = vertex_source.find("for (uint i = 0; i < command_data.max_count; i++) {\n");
+      auto body_end = vertex_source.rfind("}\n};\n");
+      if (body_start == std::string::npos || body_end == std::string::npos)
+        return E_FAIL;
+      body_start += strlen("for (uint i = 0; i < command_data.max_count; i++) {\n");
+      source << "[[kernel]] void resolve_indirect_commands_cs([[thread_position_in_grid]] uint i, "
+                "constant dxmt_render_command_data &command_data [[buffer(30)]]) {\n";
+      source << "if (i >= command_data.max_count) return;\n";
+      source << "uint count = command_data.max_count_buffer ? "
+                "command_data.max_count_buffer[0] : command_data.max_count;\n";
+      source << "do {\n" << vertex_source.substr(body_start, body_end - body_start) << "} while (false);\n}\n";
+    }
+
     WMT::Reference<WMT::Error> err;
     auto lib = device_->GetMTLDevice().newLibraryWithSource(source.view(), err);
 
@@ -350,6 +368,12 @@ public:
       info.rasterization_enabled = false;
       info.vertex_function = function;
       render_resolver = device_->GetMTLDevice().newRenderPipelineState(info, err);
+      if (auto function_cs = lib.newFunction("resolve_indirect_commands_cs")) {
+        WMT::Reference<WMT::Error> err_cs;
+        render_resolver_cs = device_->GetMTLDevice().newComputePipelineState(function_cs, err_cs);
+        if (err_cs)
+          WARN("D3D12CommandSignature: compute resolver failed: ", err_cs.description().getUTF8String());
+      }
     }
 
     if (err) {

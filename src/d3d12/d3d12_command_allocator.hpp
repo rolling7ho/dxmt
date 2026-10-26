@@ -86,6 +86,11 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
   EncoderData *encoder_current;
   size_t encoder_count_;
 
+  // A compute pass placed right before the current render pass, where ExecuteIndirect
+  // encodes its indirect command buffers.
+  ComputeEncoderData *resolve_prepass_ = nullptr;
+  EncoderData *resolve_prepass_for_ = nullptr;
+
   small_vector<EncoderData, 64> encoder_lists_;
 
   small_vector<WMT::Reference<WMT::IndirectCommandBuffer>, 4> icb_;
@@ -136,6 +141,8 @@ public:
   StartRecord(EncoderData **pStartEncoder) {
     if (encoder_last)
       return E_INVALIDARG;
+    resolve_prepass_ = nullptr;
+    resolve_prepass_for_ = nullptr;
     *pStartEncoder = encoder_last = &encoder_lists_.emplace_back(EncoderType::Null, nullptr);
     return S_OK;
   }
@@ -200,6 +207,34 @@ public:
   EncodeBlitCommand() {
     assert(encoder_current->type == EncoderType::Blit);
     auto encoder = static_cast<BlitEncoderData *>(encoder_current);
+    auto storage = (cmd_struct *)AllocateCPUHeap(sizeof(cmd_struct), 16);
+    encoder->cmd_tail->next.set(storage);
+    encoder->cmd_tail = (wmtcmd_base *)storage;
+    storage->next.set(nullptr);
+    return *storage;
+  }
+
+  ComputeEncoderData *
+  GetResolvePrepass() {
+    if (resolve_prepass_for_ == encoder_current && resolve_prepass_)
+      return resolve_prepass_;
+    auto compute = new (AllocateCPUHeap(sizeof(ComputeEncoderData), alignof(ComputeEncoderData))) ComputeEncoderData();
+    compute->type = EncoderType::Compute;
+    compute->cmd_head.type = WMTComputeCommandNop;
+    compute->cmd_head.next.set(0);
+    compute->cmd_tail = (wmtcmd_base *)&compute->cmd_head;
+    // the current pass isn't linked yet, so this lands before it
+    encoder_last->next = compute;
+    encoder_last = compute;
+    encoder_count_++;
+    resolve_prepass_ = compute;
+    resolve_prepass_for_ = encoder_current;
+    return compute;
+  }
+
+  template <typename cmd_struct>
+  cmd_struct &
+  EncodeCommandTo(ComputeEncoderData *encoder) {
     auto storage = (cmd_struct *)AllocateCPUHeap(sizeof(cmd_struct), 16);
     encoder->cmd_tail->next.set(storage);
     encoder->cmd_tail = (wmtcmd_base *)storage;

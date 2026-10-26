@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include "util_env.hpp"
 #include "d3d12_command_allocator.hpp"
 #include "com/com_pointer.hpp"
 
@@ -284,6 +285,40 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
     data->index_buffer_format = {};
   }
 
+  static const bool resolve_in_render_pass = env::getEnvVar("DXMT_EI_RESOLVE_IN_PASS") == "1";
+  if (pCmdSig->render_resolver_cs && !resolve_in_render_pass) {
+    auto prepass = GetResolvePrepass();
+
+    auto &cmd_use_icb = EncodeCommandTo<wmtcmd_compute_useresource>(prepass);
+    cmd_use_icb.type = WMTComputeCommandUseResource;
+    cmd_use_icb.usage = WMTResourceUsageWrite;
+    cmd_use_icb.resource = icb;
+
+    auto &cmd_setpso = EncodeCommandTo<wmtcmd_compute_setpso>(prepass);
+    cmd_setpso.type = WMTComputeCommandSetPSO;
+    cmd_setpso.pso = pCmdSig->render_resolver_cs;
+    cmd_setpso.threadgroup_size = {64, 1, 1};
+
+    auto &cmd_argbuf = EncodeCommandTo<wmtcmd_compute_setbuffer>(prepass);
+    cmd_argbuf.type = WMTComputeCommandSetBuffer;
+    cmd_argbuf.buffer = gpu_heap_buffer_;
+    cmd_argbuf.offset = Offset;
+    cmd_argbuf.index = 30;
+
+    auto &cmd_dispatch = EncodeCommandTo<wmtcmd_compute_dispatch>(prepass);
+    cmd_dispatch.type = WMTComputeCommandDispatchThreads;
+    cmd_dispatch.size = {MaxCount, 1, 1};
+
+    auto &cmd_use_icb_render = EncodeRenderCommand<wmtcmd_render_useresource>();
+    cmd_use_icb_render.type = WMTRenderCommandUseResource;
+    cmd_use_icb_render.stages = WMTRenderStageVertex;
+    cmd_use_icb_render.usage = WMTResourceUsageRead;
+    cmd_use_icb_render.resource = icb;
+
+    auto &cmd_setpso_render = EncodeRenderCommand<wmtcmd_render_setpso>();
+    cmd_setpso_render.type = WMTRenderCommandSetPSO;
+    cmd_setpso_render.pso = pPSO->pso;
+  } else
   {
     /**
      * TODO: move these out?
@@ -319,7 +354,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
     cmd_barrier.type = WMTRenderCommandMemoryBarrier;
     cmd_barrier.scope = WMTBarrierScopeBuffers;
     cmd_barrier.stages_after = WMTRenderStageVertex;
-    cmd_barrier.stages_before = WMTRenderStages(WMTRenderStageVertex | WMTRenderStageFragment);
+    cmd_barrier.stages_before = WMTRenderStageVertex;
 
     auto &cmd_setpso = EncodeRenderCommand<wmtcmd_render_setpso>();
     cmd_setpso.type = WMTRenderCommandSetPSO;

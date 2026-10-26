@@ -117,6 +117,9 @@ public:
   UINT ByteStride = 0;
 
   WMT::Reference<WMT::RenderPipelineState> render_resolver;
+  // Encodes render commands from a compute pass, one thread per command, so a render
+  // pass doesn't have to stop for the resolver.
+  WMT::Reference<WMT::ComputePipelineState> render_resolver_cs;
   WMT::Reference<WMT::ComputePipelineState> compute_resolver;
 
   virtual void AddRefPrivate() = 0;
