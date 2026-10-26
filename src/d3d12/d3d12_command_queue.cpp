@@ -137,6 +137,8 @@ public:
       inflight_cmdbuf_wait_thread_([this]() { this->CommandBufferWaitingThread(); }) {}
 
   ~MTLD3D12CommandQueueImpl() {
+    MTLD3D12CommandQueue *self = this;
+    device_->preencode_queue.compare_exchange_strong(self, nullptr);
     std::lock_guard<dxmt::mutex> lock(mutex_commit_);
     inflight_cmdbuf_stop_.store(inflight_cmdbuf_seq_.fetch_add(1));
     inflight_cmdbuf_seq_.notify_one();
@@ -150,12 +152,18 @@ public:
     desc_.NodeMask = 1; // typically 1 GPU only
 
     auto metal_device = device_->GetMTLDevice();
-    queue_ = metal_device.newCommandQueue(kCommandQueueSize);
+    // room for command lists encoded at Close but not committed yet
+    queue_ = metal_device.newCommandQueue(kCommandQueueSize * 2);
     if (!queue_)
       return E_FAIL;
     queue_.addResidencySet(device_->GetGlobalResidencySet());
 
     fence_ = metal_device.newFence();
+
+    if (desc_.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
+      MTLD3D12CommandQueue *none = nullptr;
+      device_->preencode_queue.compare_exchange_strong(none, this);
+    }
 
     return S_OK;
   }
@@ -213,6 +221,155 @@ public:
     IMPLEMENT_ME
   };
 
+  void
+  EncodeEncoder(EncoderData *current, WMT::Reference<WMT::CommandBuffer> &cmdbuf) {
+    switch (current->type) {
+    case EncoderType::Null:
+      break;
+    case EncoderType::Clear: {
+      auto data = static_cast<ClearEncoderData *>(current);
+      {
+        WMTRenderPassInfo info;
+        WMT::InitializeRenderPassInfo(info);
+        if (data->clear_dsv) {
+          if (data->clear_dsv & 1) {
+            info.depth.clear_depth = data->depth_stencil.first;
+            info.depth.texture = data->attachment.texture();
+            info.depth.load_action = WMTLoadActionClear;
+            info.depth.store_action = WMTStoreActionStore;
+            info.depth.depth_plane = data->depth_plane;
+          }
+          if (data->clear_dsv & 2) {
+            info.stencil.clear_stencil = data->depth_stencil.second;
+            info.stencil.texture = data->attachment.texture();
+            info.stencil.load_action = WMTLoadActionClear;
+            info.stencil.store_action = WMTStoreActionStore;
+            info.stencil.depth_plane = data->depth_plane;
+          }
+          info.render_target_width = data->width;
+          info.render_target_height = data->height;
+        } else {
+          info.colors[0].clear_color = data->color;
+          info.colors[0].texture = data->attachment.texture();
+          info.colors[0].load_action = WMTLoadActionClear;
+          info.colors[0].store_action = WMTStoreActionStore;
+          info.colors[0].depth_plane = data->depth_plane;
+        }
+        info.render_target_array_length = data->array_length;
+        auto encoder = cmdbuf.renderCommandEncoder(info);
+        encoder.setLabel(WMT::String::string("ClearPass", WMTUTF8StringEncoding));
+        encoder.waitForFence(fence_, WMTRenderStageFragment);
+        encoder.updateFence(fence_, WMTRenderStageFragment);
+        encoder.endEncoding();
+      }
+      break;
+    }
+    case EncoderType::Render: {
+      auto data = static_cast<RenderEncoderData *>(current);
+      WMTRenderPassInfo render_pass_info;
+      WMT::InitializeRenderPassInfo(render_pass_info);
+      {
+        for (unsigned i = 0; i < std::size(render_pass_info.colors); i++) {
+          auto &color_data = data->colors[i];
+          if (!color_data.attachment)
+            continue;
+          auto &color_info = render_pass_info.colors[i];
+          color_info.texture = color_data.attachment.texture();
+          color_info.load_action = color_data.load_action;
+          color_info.store_action = color_data.store_action;
+          color_info.level = color_data.level;
+          color_info.slice = color_data.slice;
+          color_info.depth_plane = color_data.depth_plane;
+          color_info.clear_color = color_data.clear_color;
+          color_info.resolve_texture = color_data.resolve_attachment.texture();
+          color_info.resolve_level = color_data.resolve_level;
+          color_info.resolve_slice = color_data.resolve_slice;
+          color_info.resolve_depth_plane = color_data.resolve_depth_plane;
+        }
+        if (data->depth.attachment) {
+          auto &depth_info = render_pass_info.depth;
+          auto &depth_data = data->depth;
+          depth_info.texture = depth_data.attachment.texture();
+          depth_info.load_action = depth_data.load_action;
+          depth_info.store_action = depth_data.store_action;
+          depth_info.level = depth_data.level;
+          depth_info.slice = depth_data.slice;
+          depth_info.depth_plane = depth_data.depth_plane;
+          depth_info.clear_depth = depth_data.clear_depth;
+        }
+        if (data->stencil.attachment) {
+          auto &stencil_info = render_pass_info.stencil;
+          auto &stencil_data = data->stencil;
+          stencil_info.texture = stencil_data.attachment.texture();
+          stencil_info.load_action = stencil_data.load_action;
+          stencil_info.store_action = stencil_data.store_action;
+          stencil_info.level = stencil_data.level;
+          stencil_info.slice = stencil_data.slice;
+          stencil_info.depth_plane = stencil_data.depth_plane;
+          stencil_info.clear_stencil = stencil_data.clear_stencil;
+        }
+        render_pass_info.default_raster_sample_count = data->default_raster_sample_count;
+        render_pass_info.render_target_array_length = data->render_target_array_length;
+        render_pass_info.render_target_width = data->render_target_width;
+        render_pass_info.render_target_height = data->render_target_height;
+      }
+      auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
+      encoder.waitForFence(fence_, WMTRenderStageVertex);
+      encoder.encodeCommands(&data->cmd_head);
+      encoder.updateFence(fence_, WMTRenderStageFragment);
+      encoder.endEncoding();
+      break;
+    }
+    case EncoderType::Blit: {
+      auto data = static_cast<BlitEncoderData *>(current);
+      auto encoder = cmdbuf.blitCommandEncoder();
+      encoder.waitForFence(fence_);
+      encoder.encodeCommands(&data->cmd_head);
+      encoder.updateFence(fence_);
+      encoder.endEncoding();
+      break;
+    }
+    case EncoderType::Compute: {
+      auto data = static_cast<ComputeEncoderData *>(current);
+      auto encoder = cmdbuf.computeCommandEncoder(false);
+      encoder.waitForFence(fence_);
+      encoder.encodeCommands(&data->cmd_head);
+      encoder.updateFence(fence_);
+      encoder.endEncoding();
+      break;
+    }
+    case EncoderType::Resolve: {
+      auto data = static_cast<ResolveEncoderData *>(current);
+
+      WMTRenderPassInfo info;
+      WMT::InitializeRenderPassInfo(info);
+      info.colors[0].texture = data->src.texture();
+      info.colors[0].load_action = WMTLoadActionLoad;
+      info.colors[0].store_action = WMTStoreActionStoreAndMultisampleResolve;
+      info.colors[0].resolve_texture = data->dst.texture();
+
+      auto encoder = cmdbuf.renderCommandEncoder(info);
+      encoder.waitForFence(fence_, WMTRenderStageFragment);
+      encoder.setLabel(WMT::String::string("ResolvePass", WMTUTF8StringEncoding));
+      encoder.updateFence(fence_, WMTRenderStageFragment);
+      encoder.endEncoding();
+
+      break;
+    }
+    }
+  }
+
+  void
+  PreEncode(MTLD3D12GraphicsCommandList *pCommandList) final {
+    auto pool = WMT::MakeAutoreleasePool();
+    WMT::Reference<WMT::CommandBuffer> cmdbuf;
+    cmdbuf = queue_.commandBuffer();
+    for (EncoderData *current = pCommandList->entry; current; current = current->next)
+      EncodeEncoder(current, cmdbuf);
+    pCommandList->pre_encoded = std::move(cmdbuf);
+    pCommandList->pre_encoded_queue = this;
+  }
+
   void STDMETHODCALLTYPE
   ExecuteCommandLists(UINT Count, ID3D12CommandList *const *ppCommandLists) {
     // Committing every few passes lets the GPU start while the rest is still being
@@ -225,6 +382,16 @@ public:
     auto scope = StartCommitting();
     for (unsigned i = 0; i < Count; i++) {
       auto pCommandList = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
+      if (pCommandList->pre_encoded && pCommandList->pre_encoded_queue == this) {
+        if (encoded)
+          scope.Rotate();
+        scope.inflight->cmdbuf = std::move(pCommandList->pre_encoded);
+        pCommandList->pre_encoded = {};
+        pCommandList->pre_encoded_queue = nullptr;
+        scope.Rotate();
+        encoded = 0;
+        continue;
+      }
       EncoderData *current = pCommandList->entry;
       while (current) {
         if (chunk_encoders && encoded >= chunk_encoders) {
@@ -232,140 +399,7 @@ public:
           encoded = 0;
         }
         auto &cmdbuf = scope.inflight->cmdbuf;
-        switch (current->type) {
-        case EncoderType::Null:
-          break;
-        case EncoderType::Clear: {
-          auto data = static_cast<ClearEncoderData *>(current);
-          {
-            WMTRenderPassInfo info;
-            WMT::InitializeRenderPassInfo(info);
-            if (data->clear_dsv) {
-              if (data->clear_dsv & 1) {
-                info.depth.clear_depth = data->depth_stencil.first;
-                info.depth.texture = data->attachment.texture();
-                info.depth.load_action = WMTLoadActionClear;
-                info.depth.store_action = WMTStoreActionStore;
-                info.depth.depth_plane = data->depth_plane;
-              }
-              if (data->clear_dsv & 2) {
-                info.stencil.clear_stencil = data->depth_stencil.second;
-                info.stencil.texture = data->attachment.texture();
-                info.stencil.load_action = WMTLoadActionClear;
-                info.stencil.store_action = WMTStoreActionStore;
-                info.stencil.depth_plane = data->depth_plane;
-              }
-              info.render_target_width = data->width;
-              info.render_target_height = data->height;
-            } else {
-              info.colors[0].clear_color = data->color;
-              info.colors[0].texture = data->attachment.texture();
-              info.colors[0].load_action = WMTLoadActionClear;
-              info.colors[0].store_action = WMTStoreActionStore;
-              info.colors[0].depth_plane = data->depth_plane;
-            }
-            info.render_target_array_length = data->array_length;
-            auto encoder = cmdbuf.renderCommandEncoder(info);
-            encoder.setLabel(WMT::String::string("ClearPass", WMTUTF8StringEncoding));
-            encoder.waitForFence(fence_, WMTRenderStageFragment);
-            encoder.updateFence(fence_, WMTRenderStageFragment);
-            encoder.endEncoding();
-          }
-          break;
-        }
-        case EncoderType::Render: {
-          auto data = static_cast<RenderEncoderData *>(current);
-          WMTRenderPassInfo render_pass_info;
-          WMT::InitializeRenderPassInfo(render_pass_info);
-          {
-            for (unsigned i = 0; i < std::size(render_pass_info.colors); i++) {
-              auto &color_data = data->colors[i];
-              if (!color_data.attachment)
-                continue;
-              auto &color_info = render_pass_info.colors[i];
-              color_info.texture = color_data.attachment.texture();
-              color_info.load_action = color_data.load_action;
-              color_info.store_action = color_data.store_action;
-              color_info.level = color_data.level;
-              color_info.slice = color_data.slice;
-              color_info.depth_plane = color_data.depth_plane;
-              color_info.clear_color = color_data.clear_color;
-              color_info.resolve_texture = color_data.resolve_attachment.texture();
-              color_info.resolve_level = color_data.resolve_level;
-              color_info.resolve_slice = color_data.resolve_slice;
-              color_info.resolve_depth_plane = color_data.resolve_depth_plane;
-            }
-            if (data->depth.attachment) {
-              auto &depth_info = render_pass_info.depth;
-              auto &depth_data = data->depth;
-              depth_info.texture = depth_data.attachment.texture();
-              depth_info.load_action = depth_data.load_action;
-              depth_info.store_action = depth_data.store_action;
-              depth_info.level = depth_data.level;
-              depth_info.slice = depth_data.slice;
-              depth_info.depth_plane = depth_data.depth_plane;
-              depth_info.clear_depth = depth_data.clear_depth;
-            }
-            if (data->stencil.attachment) {
-              auto &stencil_info = render_pass_info.stencil;
-              auto &stencil_data = data->stencil;
-              stencil_info.texture = stencil_data.attachment.texture();
-              stencil_info.load_action = stencil_data.load_action;
-              stencil_info.store_action = stencil_data.store_action;
-              stencil_info.level = stencil_data.level;
-              stencil_info.slice = stencil_data.slice;
-              stencil_info.depth_plane = stencil_data.depth_plane;
-              stencil_info.clear_stencil = stencil_data.clear_stencil;
-            }
-            render_pass_info.default_raster_sample_count = data->default_raster_sample_count;
-            render_pass_info.render_target_array_length = data->render_target_array_length;
-            render_pass_info.render_target_width = data->render_target_width;
-            render_pass_info.render_target_height = data->render_target_height;
-          }
-          auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
-          encoder.waitForFence(fence_, WMTRenderStageVertex);
-          encoder.encodeCommands(&data->cmd_head);
-          encoder.updateFence(fence_, WMTRenderStageFragment);
-          encoder.endEncoding();
-          break;
-        }
-        case EncoderType::Blit: {
-          auto data = static_cast<BlitEncoderData *>(current);
-          auto encoder = cmdbuf.blitCommandEncoder();
-          encoder.waitForFence(fence_);
-          encoder.encodeCommands(&data->cmd_head);
-          encoder.updateFence(fence_);
-          encoder.endEncoding();
-          break;
-        }
-        case EncoderType::Compute: {
-          auto data = static_cast<ComputeEncoderData *>(current);
-          auto encoder = cmdbuf.computeCommandEncoder(false);
-          encoder.waitForFence(fence_);
-          encoder.encodeCommands(&data->cmd_head);
-          encoder.updateFence(fence_);
-          encoder.endEncoding();
-          break;
-        }
-        case EncoderType::Resolve: {
-          auto data = static_cast<ResolveEncoderData *>(current);
-
-          WMTRenderPassInfo info;
-          WMT::InitializeRenderPassInfo(info);
-          info.colors[0].texture = data->src.texture();
-          info.colors[0].load_action = WMTLoadActionLoad;
-          info.colors[0].store_action = WMTStoreActionStoreAndMultisampleResolve;
-          info.colors[0].resolve_texture = data->dst.texture();
-
-          auto encoder = cmdbuf.renderCommandEncoder(info);
-          encoder.waitForFence(fence_, WMTRenderStageFragment);
-          encoder.setLabel(WMT::String::string("ResolvePass", WMTUTF8StringEncoding));
-          encoder.updateFence(fence_, WMTRenderStageFragment);
-          encoder.endEncoding();
-
-          break;
-        }
-        }
+        EncodeEncoder(current, cmdbuf);
         if (current->type != EncoderType::Null)
           encoded++;
         current = current->next;

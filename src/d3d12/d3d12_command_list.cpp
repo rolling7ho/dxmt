@@ -246,6 +246,8 @@ public:
     ResetState(pInitialPipelineState);
 
     encoder_count = std::numeric_limits<size_t>::max();
+    pre_encoded = {};
+    pre_encoded_queue = nullptr;
     return allocator_->StartRecord(&entry);
   }
 
@@ -280,7 +282,15 @@ public:
   Close() {
     if (encoder_count < std::numeric_limits<size_t>::max())
       return E_FAIL;
-    return allocator_->EndRecord(&encoder_count);
+    HRESULT hr = allocator_->EndRecord(&encoder_count);
+    if (FAILED(hr))
+      return hr;
+    // Encoding now overlaps with the GPU's current work instead of delaying the next submission.
+    static const bool preencode = env::getEnvVar("DXMT_PREENCODE") != "0";
+    if (preencode)
+      if (auto queue = device_->preencode_queue.load())
+        queue->PreEncode(this);
+    return S_OK;
   };
 
   HRESULT STDMETHODCALLTYPE

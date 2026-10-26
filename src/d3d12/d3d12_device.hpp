@@ -17,6 +17,7 @@
  */
 
 #pragma once
+#include <atomic>
 #include "d3d12.h"
 #include "d3d12_command_encoder.hpp"
 #include "d3d12_descriptor_heap.hpp"
@@ -40,10 +41,15 @@
 
 namespace dxmt {
 
+class MTLD3D12CommandQueue;
+
 class MTLD3D12GraphicsCommandList : public ID3D12GraphicsCommandList2 {
 public:
   EncoderData *entry;
   size_t encoder_count;
+  // Encoded when the list was closed, for its next execution on pre_encoded_queue.
+  WMT::Reference<WMT::CommandBuffer> pre_encoded;
+  MTLD3D12CommandQueue *pre_encoded_queue = nullptr;
 };
 
 class MTLD3D12CommandAllocator : public ID3D12CommandAllocator {
@@ -57,6 +63,8 @@ public:
 class MTLD3D12CommandQueue : public ID3D12CommandQueue {
 public:
   virtual HRESULT Present(Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after) = 0;
+  // Encodes a closed command list ahead of ExecuteCommandLists.
+  virtual void PreEncode(MTLD3D12GraphicsCommandList *pCommandList) = 0;
 };
 
 class MTLD3D12Resource : public ID3D12Resource {
@@ -171,6 +179,9 @@ public:
 
 class MTLD3D12Device : public ID3D12Device8 {
 public:
+  // The direct queue that closed command lists are encoded for in advance.
+  std::atomic<MTLD3D12CommandQueue *> preencode_queue{nullptr};
+
   virtual WMT::Device GetMTLDevice() = 0;
 
   virtual D3D_FEATURE_LEVEL GetFeatureLevel() = 0;
