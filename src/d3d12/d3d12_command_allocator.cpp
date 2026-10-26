@@ -313,6 +313,14 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
     cmd_draw_res.base_instance = 0;
     cmd_draw_res.instance_count = 1;
 
+    // The resolver writes the indirect command buffer from its vertex stage; make those
+    // writes visible before the commands execute.
+    auto &cmd_barrier = EncodeRenderCommand<wmtcmd_render_memory_barrier>();
+    cmd_barrier.type = WMTRenderCommandMemoryBarrier;
+    cmd_barrier.scope = WMTBarrierScopeBuffers;
+    cmd_barrier.stages_after = WMTRenderStageVertex;
+    cmd_barrier.stages_before = WMTRenderStages(WMTRenderStageVertex | WMTRenderStageFragment);
+
     auto &cmd_setpso = EncodeRenderCommand<wmtcmd_render_setpso>();
     cmd_setpso.type = WMTRenderCommandSetPSO;
     cmd_setpso.pso = pPSO->pso;

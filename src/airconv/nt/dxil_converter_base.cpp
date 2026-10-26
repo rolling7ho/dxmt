@@ -5,6 +5,7 @@
 #include "dxil_constants.hpp"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Constants.h"
@@ -66,8 +67,15 @@ Converter::Run(llvm::BasicBlock *ReturnBB) {
       }
     }
 
-    // FIXME: remove const_cast
-    for (auto &BB : *const_cast<llvm::Function *>(entry.function)) {
+    // Translate in reverse post-order so every definition is translated before
+    // its uses: DXIL's block layout order doesn't guarantee that dominators
+    // come first. FIXME: remove const_cast
+    auto *Function = const_cast<llvm::Function *>(entry.function);
+    llvm::ReversePostOrderTraversal<llvm::Function *> RPOT(Function);
+    llvm::SmallPtrSet<llvm::BasicBlock *, 32> Reachable;
+    for (auto *BBPtr : RPOT) {
+      auto &BB = *BBPtr;
+      Reachable.insert(BBPtr);
       ir.SetInsertPoint(block_map_[&BB]);
       for (auto &Inst : BB) {
         if (isa<PHINode>(&Inst))
@@ -83,6 +91,13 @@ Converter::Run(llvm::BasicBlock *ReturnBB) {
         if (*Result && !(*Result)->getType()->isVoidTy())
           value_map_[&Inst] = *Result;
       }
+    }
+    // Blocks the traversal never reached can't execute.
+    for (auto &BB : *Function) {
+      if (Reachable.contains(&BB))
+        continue;
+      ir.SetInsertPoint(block_map_[&BB]);
+      ir.CreateUnreachable();
     }
   }
 
@@ -303,7 +318,10 @@ Converter::Get(llvm::Value *Value) {
       return Mapped.takeError();
     return *Mapped;
   }
-  return unsupported("dxil: reference to untranslated Value");
+  std::string Desc;
+  llvm::raw_string_ostream OS(Desc);
+  Value->print(OS);
+  return unsupported("dxil: reference to untranslated Value: " + OS.str());
 }
 
 llvm::Error
@@ -1968,7 +1986,9 @@ Converter::EmitBinary(const CallInst &Call) {
   case kOpFMin:
     if (!(*LHS)->getType()->isFloatingPointTy())
       return unsupported("dxil: fp binary operation on a non-float operand");
-    return air.CreateFPBinOp(OpId == kOpFMax ? AIRBuilder::fmax : AIRBuilder::fmin, *LHS, *RHS);
+    // DXIL FMax/FMin are IEEE maxNum/minNum: a NaN operand yields the other one.
+    // Metal's fast variants leave NaN behavior undefined, so use the precise ones.
+    return air.CreateFPBinOp(OpId == kOpFMax ? AIRBuilder::fmax : AIRBuilder::fmin, *LHS, *RHS, false);
   case kOpIMax:
   case kOpIMin:
   case kOpUMax:

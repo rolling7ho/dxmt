@@ -103,6 +103,13 @@ public:
 
     source << kSharedHeader;
 
+    {
+      std::stringstream args;
+      for (unsigned i = 0; i < pDesc->NumArgumentDescs; i++)
+        args << " " << (unsigned)pDesc->pArgumentDescs[i].Type;
+      WARN("D3D12CommandSignature: stride ", pDesc->ByteStride, ", arguments", args.str());
+    }
+
     source << "struct __attribute__ ((packed)) d3d12_arguments {\n";
 
     for (unsigned i = 0; i < pDesc->NumArgumentDescs; i++) {
@@ -174,6 +181,7 @@ public:
     bool is_compute = side_effect == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
     CommandType = side_effect;
     UpdateIndexBuffer = ib_index != ~0u;
+    ByteStride = pDesc->ByteStride;
 
     if (is_compute)
       source

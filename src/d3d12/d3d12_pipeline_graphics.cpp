@@ -463,6 +463,9 @@ public:
 
   virtual HRESULT
   Initialize(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc) {
+    DebugPSHash = ShaderHash(pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength);
+    DebugSkip = IsShaderSkipped(pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength) ||
+                IsShaderSkipped(pDesc->VS.pShaderBytecode, pDesc->VS.BytecodeLength);
     if (pDesc->StreamOutput.NumEntries) {
       ERR("CreatePipelineState: SO not supported");
       return E_NOTIMPL;
@@ -527,11 +530,15 @@ public:
       rootsig.next = &data_ia_layout;
 
       SM50ShaderBitcode vs_bitcode;
+      DumpShader("vs", pDesc->VS.pShaderBytecode, pDesc->VS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length);
 
       if (SM50Compile(
               shader_vs, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&rootsig, "vs_main", &vs_bitcode, &sm50_err
           )) {
         ERR("Failed to compile vs shader: ", SM50GetErrorMessageString(sm50_err));
+        DumpFailedShader(
+            "vs", pDesc->VS.pShaderBytecode, pDesc->VS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length
+        );
         return E_FAIL;
       }
 
@@ -585,10 +592,14 @@ public:
       rootsig.next = &data_ps;
 
       SM50ShaderBitcode ps_bitcode;
+      DumpShader("ps", pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length);
       if (SM50Compile(
               shader_ps, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&rootsig, ps_name.c_str(), &ps_bitcode, &sm50_err
           )) {
         ERR("Failed to compile ps shader: ", SM50GetErrorMessageString(sm50_err));
+        DumpFailedShader(
+            "ps", pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length
+        );
         return E_FAIL;
       }
       SM50_COMPILED_BITCODE ps_bitcode_compiled;

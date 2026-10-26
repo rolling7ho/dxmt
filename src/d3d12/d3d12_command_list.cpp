@@ -16,9 +16,46 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include "util_env.hpp"
 #include "d3d12_command_allocator.hpp"
 #include "com/com_pointer.hpp"
 #include "dxmt_format.hpp"
+
+#include <chrono>
+#include <map>
+#include <mutex>
+#include <tuple>
+
+namespace dxmt {
+namespace {
+// DXMT_DRAWSTATS=1: every 10 seconds, logs draws per pixel shader and draw kind.
+void RecordDrawStat(uint64_t ps, std::string kind, uint64_t draws, uint64_t instances) {
+  static const bool enabled = env::getEnvVar("DXMT_DRAWSTATS") == "1";
+  if (!enabled)
+    return;
+  static std::mutex mutex;
+  static std::map<std::tuple<uint64_t, std::string>, std::pair<uint64_t, uint64_t>> stats;
+  static auto last = std::chrono::steady_clock::now();
+  std::lock_guard lock(mutex);
+  auto &entry = stats[{ps, kind}];
+  entry.first += draws;
+  entry.second += instances;
+  auto now = std::chrono::steady_clock::now();
+  if (now - last < std::chrono::seconds(10))
+    return;
+  last = now;
+  for (auto &[key, value] : stats) {
+    char line[128];
+    snprintf(line, sizeof(line), "drawstat %016llx %s calls/draws=%llu instances=%llu",
+             (unsigned long long)std::get<0>(key), std::get<1>(key).c_str(), (unsigned long long)value.first,
+             (unsigned long long)value.second);
+    WARN(line);
+  }
+  WARN("drawstat end");
+  stats.clear();
+}
+} // namespace
+} // namespace dxmt
 
 namespace dxmt {
 
@@ -291,6 +328,8 @@ public:
 
   DrawCallStatus
   PreDraw(bool SkipResourceBinding = false) {
+    if (pso_graphics_ && pso_graphics_->DebugSkip)
+      return DrawCallStatus::Invalid;
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Render) {
 
       allocator_->InvalidateCurrentPass();
@@ -501,6 +540,7 @@ public:
     if (status == DrawCallStatus::Invalid)
       return;
 
+    RecordDrawStat(pso_graphics_->DebugPSHash, "draw", 1, InstanceCount);
     auto &cmd_draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw>();
     cmd_draw.type = WMTRenderCommandDraw;
     cmd_draw.primitive_type = primitive_type;
@@ -522,6 +562,7 @@ public:
     DrawCallStatus status = PreDraw();
     if (status == DrawCallStatus::Invalid)
       return;
+    RecordDrawStat(pso_graphics_->DebugPSHash, "indexed", 1, InstanceCount);
     auto &cmd_draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indexed>();
     cmd_draw.type = WMTRenderCommandDrawIndexed;
     cmd_draw.primitive_type = primitive_type;
@@ -555,6 +596,8 @@ public:
 
   bool
   PreDispatch(bool SkipResourceBinding = false) {
+    if (pso_compute_ && pso_compute_->DebugSkip)
+      return false;
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Compute) {
       allocator_->InvalidateCurrentPass();
       auto compute = allocator_->AllocatePass<ComputeEncoderData>();
@@ -1456,8 +1499,25 @@ public:
   ) {
     auto sig = static_cast<MTLD3D12CommandSignature *>(pCommandSignature);
     auto arg_buffer = static_cast<MTLD3D12Resource *>(pArgBuffer);
+    static std::atomic<unsigned> logged = 0;
+    if (logged++ < 30)
+      WARN(
+          "ExecuteIndirect: type ", (unsigned)sig->CommandType, ", max ", MaxCommandCount, ", count buffer ",
+          pCountBuffer ? "yes" : "no", ", arg buffer ", (arg_buffer && arg_buffer->buffer) ? "ok" : "MISSING",
+          ", pso ", pso_graphics_ ? "set" : "none", ", root args ", sig->UpdateRootArguments ? 1 : 0
+      );
     if (!arg_buffer || !arg_buffer->buffer)
       return;
+    static const bool skip_indirect = env::getEnvVar("DXMT_SKIP_EI") == "1";
+    if (skip_indirect)
+      return;
+    static const bool skip_first = env::getEnvVar("DXMT_EI_SKIPFIRST") == "1";
+    if (skip_first && !pCountBuffer && sig->CommandType != D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH) {
+      if (MaxCommandCount <= 1)
+        return;
+      MaxCommandCount--;
+      ArgBufferOffset += sig->ByteStride;
+    }
     auto ArgBufferAddress = arg_buffer->buffer->current()->gpuAddress() + ArgBufferOffset;
     uint64_t CountBufferAddress = 0;
     if (auto count_buffer = static_cast<MTLD3D12Resource *>(pCountBuffer)) {
@@ -1495,6 +1555,7 @@ public:
       IMPLEMENT_ME // TODO: (potential) emulated pipeline
     }
 
+    RecordDrawStat(pso_graphics_->DebugPSHash, "indirect-s" + std::to_string(sig->ByteStride) + (sig->UpdateVertexBuffers ? "-vb" : "") + (sig->UpdateIndexBuffer ? "-ib" : "") + (sig->UpdateRootArguments ? "-root" : ""), MaxCommandCount, 1);
     auto cmd = allocator_->EncodeIndirectRenderCommand(sig, pso_graphics_.ptr(), MaxCommandCount);
     cmd->max_count_buffer = CountBufferAddress;
     cmd->argument_buffer = ArgBufferAddress;

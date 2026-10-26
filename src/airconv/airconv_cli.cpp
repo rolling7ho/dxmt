@@ -77,6 +77,9 @@ static cl::opt<bool> PreserveAssemblyUseListOrder(
   cl::init(false), cl::Hidden
 );
 
+static cl::opt<std::string>
+  RootSignature("rootsig", cl::desc("Compile against the supplied serialized root signature"));
+
 cl::list<std::string> f("f", cl::Prefix, cl::Hidden);
 
 namespace {
@@ -220,6 +223,22 @@ int main(int argc, char **argv) {
   data.flags = {};
   data.next = 0;
   data.type = SM50_SHADER_COMMON;
+
+  std::unique_ptr<MemoryBuffer> RootSignatureBuffer;
+  SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
+  if (!RootSignature.getValue().empty()) {
+    ErrorOr<std::unique_ptr<MemoryBuffer>> FileOrErr = MemoryBuffer::getFile(RootSignature, /*IsText=*/false);
+    if (std::error_code EC = FileOrErr.getError()) {
+      errs() << "Could not open root signature: " << EC.message() << '\n';
+      return 1;
+    }
+    RootSignatureBuffer = std::move(*FileOrErr);
+    rootsig.type = SM50_SHADER_ROOT_SIGNATURE;
+    rootsig.bytecode = RootSignatureBuffer->getBufferStart();
+    rootsig.bytecode_length = RootSignatureBuffer->getBufferSize();
+    rootsig.next = nullptr;
+    data.next = &rootsig;
+  }
 
   if (!HullBeforeDomain.getValue().empty()) {
     ErrorOr<std::unique_ptr<MemoryBuffer>> FileOrErr =

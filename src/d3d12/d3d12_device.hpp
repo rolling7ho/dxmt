@@ -114,6 +114,7 @@ public:
   UINT UpdateRootArguments : 1;
   UINT UpdateVertexBuffers : 1;
   UINT UpdateIndexBuffer   : 1;
+  UINT ByteStride = 0;
 
   WMT::Reference<WMT::RenderPipelineState> render_resolver;
   WMT::Reference<WMT::ComputePipelineState> compute_resolver;
@@ -129,6 +130,9 @@ public:
 class MTLD3D12PipelineState : public ID3D12PipelineState {
 public:
   UINT IsComputePipelineState;
+  /* Set from DXMT_SKIP_SHADERS: draws and dispatches with this pipeline are dropped. */
+  bool DebugSkip = false;
+  uint64_t DebugPSHash = 0;
 
   static HRESULT
   InitializeShader(D3D12_SHADER_BYTECODE Bytecode, sm50_shader_t *ppShader, struct MTL_SHADER_REFLECTION *pRefl);
@@ -162,7 +166,7 @@ public:
   virtual void ReleasePrivate() = 0;
 };
 
-class MTLD3D12Device : public ID3D12Device4 {
+class MTLD3D12Device : public ID3D12Device8 {
 public:
   virtual WMT::Device GetMTLDevice() = 0;
 

@@ -63,8 +63,13 @@ public:
 
     SM50ShaderBitcode cs_bitcode;
 
+    DebugSkip = IsShaderSkipped(pDesc->CS.pShaderBytecode, pDesc->CS.BytecodeLength);
+    DumpShader("cs", pDesc->CS.pShaderBytecode, pDesc->CS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length);
     if (SM50Compile(shader_cs, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common, "cs_main", &cs_bitcode, &sm50_err)) {
       ERR("Failed to compile cs shader: ", SM50GetErrorMessageString(sm50_err));
+      DumpFailedShader(
+          "cs", pDesc->CS.pShaderBytecode, pDesc->CS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length
+      );
       return E_FAIL;
     }
 

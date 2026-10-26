@@ -99,7 +99,8 @@ public:
 
     if (riid == __uuidof(IUnknown) || riid == __uuidof(ID3D12Object) || riid == __uuidof(ID3D12Device) ||
         riid == __uuidof(ID3D12Device1) || riid == __uuidof(ID3D12Device2) || riid == __uuidof(ID3D12Device3) ||
-        riid == __uuidof(ID3D12Device4)) {
+        riid == __uuidof(ID3D12Device4) || riid == __uuidof(ID3D12Device5) || riid == __uuidof(ID3D12Device6) ||
+        riid == __uuidof(ID3D12Device7) || riid == __uuidof(ID3D12Device8)) {
       *ppvObject = ref(this);
       return S_OK;
     }
@@ -1127,12 +1128,16 @@ public:
       D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *OptimizedClearValue,
       ID3D12ProtectedResourceSession *pSession, REFIID riid, void **ppResource
   ) {
-    return E_NOTIMPL;
+    if (pSession)
+      return E_NOTIMPL;
+    return CreateCommittedResource(pHeapProps, HeapFlags, pDesc, InitialState, OptimizedClearValue, riid, ppResource);
   }
 
   HRESULT STDMETHODCALLTYPE
   CreateHeap1(const D3D12_HEAP_DESC *pDesc, ID3D12ProtectedResourceSession *pSession, REFIID riid, void **ppHeap) {
-    return E_NOTIMPL;
+    if (pSession)
+      return E_NOTIMPL;
+    return CreateHeap(pDesc, riid, ppHeap);
   }
 
   HRESULT STDMETHODCALLTYPE
@@ -1201,6 +1206,169 @@ public:
     __ret->Alignment = has_msaa_resource ? D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT
                                          : D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
     return __ret;
+  }
+
+  // ID3D12Device5: raytracing and meta commands are not supported.
+
+  HRESULT STDMETHODCALLTYPE
+  CreateLifetimeTracker(ID3D12LifetimeOwner *pOwner, REFIID riid, void **ppvTracker) {
+    return E_NOTIMPL;
+  }
+
+  void STDMETHODCALLTYPE
+  RemoveDevice() {}
+
+  HRESULT STDMETHODCALLTYPE
+  EnumerateMetaCommands(UINT *pNumMetaCommands, D3D12_META_COMMAND_DESC *pDescs) {
+    if (!pNumMetaCommands)
+      return E_INVALIDARG;
+    *pNumMetaCommands = 0;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  EnumerateMetaCommandParameters(
+      REFGUID CommandId, D3D12_META_COMMAND_PARAMETER_STAGE Stage, UINT *pTotalStructureSizeInBytes,
+      UINT *pParameterCount, D3D12_META_COMMAND_PARAMETER_DESC *pParameterDescs
+  ) {
+    return E_INVALIDARG;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateMetaCommand(
+      REFGUID CommandId, UINT NodeMask, const void *pCreationParametersData,
+      SIZE_T CreationParametersDataSizeInBytes, REFIID riid, void **ppMetaCommand
+  ) {
+    return E_INVALIDARG;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateStateObject(const D3D12_STATE_OBJECT_DESC *pDesc, REFIID riid, void **ppStateObject) {
+    return E_NOTIMPL;
+  }
+
+  void STDMETHODCALLTYPE
+  GetRaytracingAccelerationStructurePrebuildInfo(
+      const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *pDesc,
+      D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO *pInfo
+  ) {
+    if (pInfo)
+      *pInfo = {};
+  }
+
+  D3D12_DRIVER_MATCHING_IDENTIFIER_STATUS STDMETHODCALLTYPE
+  CheckDriverMatchingIdentifier(
+      D3D12_SERIALIZED_DATA_TYPE SerializedDataType,
+      const D3D12_SERIALIZED_DATA_DRIVER_MATCHING_IDENTIFIER *pIdentifierToCheck
+  ) {
+    return D3D12_DRIVER_MATCHING_IDENTIFIER_UNRECOGNIZED;
+  }
+
+  // ID3D12Device6
+
+  HRESULT STDMETHODCALLTYPE
+  SetBackgroundProcessingMode(
+      D3D12_BACKGROUND_PROCESSING_MODE Mode, D3D12_MEASUREMENTS_ACTION MeasurementsAction, HANDLE hEventToSignalUponCompletion,
+      BOOL *pbFurtherMeasurementsDesired
+  ) {
+    if (pbFurtherMeasurementsDesired)
+      *pbFurtherMeasurementsDesired = FALSE;
+    if (hEventToSignalUponCompletion)
+      SetEvent(hEventToSignalUponCompletion);
+    return S_OK;
+  }
+
+  // ID3D12Device7
+
+  HRESULT STDMETHODCALLTYPE
+  AddToStateObject(
+      const D3D12_STATE_OBJECT_DESC *pAddition, ID3D12StateObject *pStateObjectToGrowFrom, REFIID riid,
+      void **ppNewStateObject
+  ) {
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateProtectedResourceSession1(const D3D12_PROTECTED_RESOURCE_SESSION_DESC1 *pDesc, REFIID riid, void **ppSession) {
+    return E_NOTIMPL;
+  }
+
+  // ID3D12Device8: D3D12_RESOURCE_DESC1 is D3D12_RESOURCE_DESC plus a sampler feedback mip region,
+  // which is only meaningful for sampler feedback resources (not supported).
+
+  static D3D12_RESOURCE_DESC
+  ToResourceDesc(const D3D12_RESOURCE_DESC1 &desc1) {
+    D3D12_RESOURCE_DESC desc;
+    desc.Dimension = desc1.Dimension;
+    desc.Alignment = desc1.Alignment;
+    desc.Width = desc1.Width;
+    desc.Height = desc1.Height;
+    desc.DepthOrArraySize = desc1.DepthOrArraySize;
+    desc.MipLevels = desc1.MipLevels;
+    desc.Format = desc1.Format;
+    desc.SampleDesc = desc1.SampleDesc;
+    desc.Layout = desc1.Layout;
+    desc.Flags = desc1.Flags;
+    return desc;
+  }
+
+  D3D12_RESOURCE_ALLOCATION_INFO *STDMETHODCALLTYPE
+  GetResourceAllocationInfo2(
+      D3D12_RESOURCE_ALLOCATION_INFO *__ret, UINT VisibleMask, UINT ResourceDescCount,
+      const D3D12_RESOURCE_DESC1 *pResourceDescs, D3D12_RESOURCE_ALLOCATION_INFO1 *pResourceAllocationInfo1
+  ) {
+    std::vector<D3D12_RESOURCE_DESC> descs(ResourceDescCount);
+    for (unsigned i = 0; i < ResourceDescCount; i++)
+      descs[i] = ToResourceDesc(pResourceDescs[i]);
+    return GetResourceAllocationInfo1(__ret, VisibleMask, ResourceDescCount, descs.data(), pResourceAllocationInfo1);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateCommittedResource2(
+      const D3D12_HEAP_PROPERTIES *pHeapProperties, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC1 *pDesc,
+      D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE *pOptimizedClearValue,
+      ID3D12ProtectedResourceSession *pProtectedSession, REFIID riidResource, void **ppvResource
+  ) {
+    if (!pDesc)
+      return E_INVALIDARG;
+    if (pProtectedSession)
+      return E_NOTIMPL;
+    auto desc = ToResourceDesc(*pDesc);
+    return CreateCommittedResource(
+        pHeapProperties, HeapFlags, &desc, InitialResourceState, pOptimizedClearValue, riidResource, ppvResource
+    );
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreatePlacedResource1(
+      ID3D12Heap *pHeap, UINT64 HeapOffset, const D3D12_RESOURCE_DESC1 *pDesc, D3D12_RESOURCE_STATES InitialState,
+      const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riid, void **ppvResource
+  ) {
+    if (!pDesc)
+      return E_INVALIDARG;
+    auto desc = ToResourceDesc(*pDesc);
+    return CreatePlacedResource(pHeap, HeapOffset, &desc, InitialState, pOptimizedClearValue, riid, ppvResource);
+  }
+
+  void STDMETHODCALLTYPE
+  CreateSamplerFeedbackUnorderedAccessView(
+      ID3D12Resource *pTargetedResource, ID3D12Resource *pFeedbackResource, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor
+  ) {
+    WARN("D3D12Device: sampler feedback is not supported");
+  }
+
+  void STDMETHODCALLTYPE
+  GetCopyableFootprints1(
+      const D3D12_RESOURCE_DESC1 *pResourceDesc, UINT FirstSubresource, UINT NumSubresources, UINT64 BaseOffset,
+      D3D12_PLACED_SUBRESOURCE_FOOTPRINT *pLayouts, UINT *pNumRows, UINT64 *pRowSizeInBytes, UINT64 *pTotalBytes
+  ) {
+    D3D12_RESOURCE_DESC desc;
+    if (pResourceDesc)
+      desc = ToResourceDesc(*pResourceDesc);
+    GetCopyableFootprints(
+        pResourceDesc ? &desc : nullptr, FirstSubresource, NumSubresources, BaseOffset, pLayouts, pNumRows,
+        pRowSizeInBytes, pTotalBytes
+    );
   }
 
   WMT::ResidencySet
