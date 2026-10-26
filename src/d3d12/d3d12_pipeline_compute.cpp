@@ -61,23 +61,23 @@ public:
 
     threadgroup_size = {ref_cs.ThreadgroupSize[0], ref_cs.ThreadgroupSize[1], ref_cs.ThreadgroupSize[2]};
 
-    SM50ShaderBitcode cs_bitcode;
-
     DebugSkip = IsShaderSkipped(pDesc->CS.pShaderBytecode, pDesc->CS.BytecodeLength);
-    DumpShader("cs", pDesc->CS.pShaderBytecode, pDesc->CS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length);
-    if (SM50Compile(shader_cs, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common, "cs_main", &cs_bitcode, &sm50_err)) {
-      ERR("Failed to compile cs shader: ", SM50GetErrorMessageString(sm50_err));
-      DumpFailedShader(
-          "cs", pDesc->CS.pShaderBytecode, pDesc->CS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length
-      );
-      return E_FAIL;
+    SM50ShaderBitcode cs_bitcode;
+    auto cs_data = LoadCachedShader(pDesc->CS.pShaderBytecode, pDesc->CS.BytecodeLength, &common, "cs_main");
+    if (!cs_data) {
+      DumpShader("cs", pDesc->CS.pShaderBytecode, pDesc->CS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length);
+      if (SM50Compile(shader_cs, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common, "cs_main", &cs_bitcode, &sm50_err)) {
+        ERR("Failed to compile cs shader: ", SM50GetErrorMessageString(sm50_err));
+        DumpFailedShader(
+            "cs", pDesc->CS.pShaderBytecode, pDesc->CS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length
+        );
+        return E_FAIL;
+      }
+      SM50_COMPILED_BITCODE cs_bitcode_compiled;
+      SM50GetCompiledBitcode(cs_bitcode, &cs_bitcode_compiled);
+      cs_data = WMT::MakeDispatchData(cs_bitcode_compiled.Data, cs_bitcode_compiled.Size);
+      StoreCachedShader(pDesc->CS.pShaderBytecode, pDesc->CS.BytecodeLength, &common, "cs_main", cs_data);
     }
-
-    SM50_COMPILED_BITCODE cs_bitcode_compiled;
-
-    SM50GetCompiledBitcode(cs_bitcode, &cs_bitcode_compiled);
-
-    auto cs_data = WMT::MakeDispatchData(cs_bitcode_compiled.Data, cs_bitcode_compiled.Size);
 
     auto metal = device_->GetMTLDevice();
 

@@ -19,7 +19,10 @@
 #pragma once
 #include "airconv_public.h"
 #include "util_env.hpp"
+#include "dxmt_shader_cache.hpp"
+#include "sha1/sha1_util.hpp"
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <string>
 
@@ -48,6 +51,88 @@ DumpFailedShader(const char *stage, const void *bytecode, size_t length, const v
   write(stage, bytecode, length);
   if (rootsig && rootsig != bytecode)
     write("rootsig", rootsig, rootsig_length);
+}
+
+/* Shader cache: airconv's output for a shader, keyed by its bytecode and every compilation
+ * argument that affects the result, so later runs skip the conversion. */
+inline bool
+HashCompileArguments(Sha1HashState &h, const void *pArgs, const char *function_name) {
+  // bump when the converter's output changes
+  h.update("vodka-d3d12-1", 13);
+  h.update(function_name, strlen(function_name));
+  for (auto arg = (const SM50_SHADER_COMPILATION_ARGUMENT_DATA *)pArgs; arg;
+       arg = (const SM50_SHADER_COMPILATION_ARGUMENT_DATA *)arg->next) {
+    h.update(arg->type);
+    switch (arg->type) {
+    case SM50_SHADER_COMMON: {
+      auto data = (const SM50_SHADER_COMMON_DATA *)arg;
+      h.update(data->metal_version);
+      h.update(data->flags);
+      break;
+    }
+    case SM50_SHADER_PSO_PIXEL_SHADER: {
+      auto data = (const SM50_SHADER_PSO_PIXEL_SHADER_DATA *)arg;
+      h.update(data->sample_mask);
+      h.update(data->dual_source_blending);
+      h.update(data->disable_depth_output);
+      h.update(data->unorm_output_reg_mask);
+      h.update(data->pixel_formats);
+      break;
+    }
+    case SM50_SHADER_IA_INPUT_LAYOUT: {
+      auto data = (const SM50_SHADER_IA_INPUT_LAYOUT_DATA *)arg;
+      h.update(data->index_buffer_format);
+      h.update(data->slot_mask);
+      h.update(data->num_elements);
+      for (unsigned i = 0; i < data->num_elements; i++) {
+        auto &element = data->elements[i];
+        uint32_t fields[] = {element.reg, element.slot, element.aligned_byte_offset, element.format,
+                             element.step_function, element.step_rate};
+        h.update(fields);
+      }
+      break;
+    }
+    case SM50_SHADER_ROOT_SIGNATURE: {
+      auto data = (const SM50_SHADER_ROOT_SIGNATURE_DATA *)arg;
+      h.update(data->bytecode_length);
+      h.update(data->bytecode, data->bytecode_length);
+      break;
+    }
+    default:
+      return false;
+    }
+  }
+  return true;
+}
+
+inline ShaderCache &
+D3D12ShaderCache() {
+  return ShaderCache::getInstance(WMTMetal310);
+}
+
+inline WMT::Reference<WMT::DispatchData>
+LoadCachedShader(const void *bytecode, size_t length, const void *pArgs, const char *function_name) {
+  Sha1HashState h;
+  if (!HashCompileArguments(h, pArgs, function_name))
+    return {};
+  auto key = std::make_pair(Sha1HashState::compute(bytecode, length), h.final());
+  auto reader = D3D12ShaderCache().getReader();
+  if (!reader)
+    return {};
+  return reader->get(key);
+}
+
+inline void
+StoreCachedShader(
+    const void *bytecode, size_t length, const void *pArgs, const char *function_name, WMT::DispatchData data
+) {
+  Sha1HashState h;
+  if (!HashCompileArguments(h, pArgs, function_name))
+    return;
+  auto key = std::make_pair(Sha1HashState::compute(bytecode, length), h.final());
+  auto writer = D3D12ShaderCache().getWriter();
+  if (writer)
+    writer->set(key, data);
 }
 
 /* DXMT_SKIP_SHADERS is a comma-separated list of shader hashes (as named by the

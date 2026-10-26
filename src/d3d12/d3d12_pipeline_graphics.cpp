@@ -530,21 +530,25 @@ public:
       rootsig.next = &data_ia_layout;
 
       SM50ShaderBitcode vs_bitcode;
-      DumpShader("vs", pDesc->VS.pShaderBytecode, pDesc->VS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length);
-
-      if (SM50Compile(
-              shader_vs, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&rootsig, "vs_main", &vs_bitcode, &sm50_err
-          )) {
-        ERR("Failed to compile vs shader: ", SM50GetErrorMessageString(sm50_err));
-        DumpFailedShader(
+      auto vs_data = LoadCachedShader(pDesc->VS.pShaderBytecode, pDesc->VS.BytecodeLength, &rootsig, "vs_main");
+      if (!vs_data) {
+        DumpShader(
             "vs", pDesc->VS.pShaderBytecode, pDesc->VS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length
         );
-        return E_FAIL;
+        if (SM50Compile(
+                shader_vs, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&rootsig, "vs_main", &vs_bitcode, &sm50_err
+            )) {
+          ERR("Failed to compile vs shader: ", SM50GetErrorMessageString(sm50_err));
+          DumpFailedShader(
+              "vs", pDesc->VS.pShaderBytecode, pDesc->VS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length
+          );
+          return E_FAIL;
+        }
+        SM50_COMPILED_BITCODE vs_bitcode_compiled;
+        SM50GetCompiledBitcode(vs_bitcode, &vs_bitcode_compiled);
+        vs_data = WMT::MakeDispatchData(vs_bitcode_compiled.Data, vs_bitcode_compiled.Size);
+        StoreCachedShader(pDesc->VS.pShaderBytecode, pDesc->VS.BytecodeLength, &rootsig, "vs_main", vs_data);
       }
-
-      SM50_COMPILED_BITCODE vs_bitcode_compiled;
-      SM50GetCompiledBitcode(vs_bitcode, &vs_bitcode_compiled);
-      auto vs_data = WMT::MakeDispatchData(vs_bitcode_compiled.Data, vs_bitcode_compiled.Size);
       auto vs_lib = metal.newLibrary(vs_data, err);
       vs_func = vs_lib.newFunction("vs_main");
     } else {
@@ -592,19 +596,25 @@ public:
       rootsig.next = &data_ps;
 
       SM50ShaderBitcode ps_bitcode;
-      DumpShader("ps", pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length);
-      if (SM50Compile(
-              shader_ps, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&rootsig, ps_name.c_str(), &ps_bitcode, &sm50_err
-          )) {
-        ERR("Failed to compile ps shader: ", SM50GetErrorMessageString(sm50_err));
-        DumpFailedShader(
+      auto ps_data = LoadCachedShader(pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength, &rootsig, ps_name.c_str());
+      if (!ps_data) {
+        DumpShader(
             "ps", pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length
         );
-        return E_FAIL;
+        if (SM50Compile(
+                shader_ps, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&rootsig, ps_name.c_str(), &ps_bitcode, &sm50_err
+            )) {
+          ERR("Failed to compile ps shader: ", SM50GetErrorMessageString(sm50_err));
+          DumpFailedShader(
+              "ps", pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength, rootsig.bytecode, rootsig.bytecode_length
+          );
+          return E_FAIL;
+        }
+        SM50_COMPILED_BITCODE ps_bitcode_compiled;
+        SM50GetCompiledBitcode(ps_bitcode, &ps_bitcode_compiled);
+        ps_data = WMT::MakeDispatchData(ps_bitcode_compiled.Data, ps_bitcode_compiled.Size);
+        StoreCachedShader(pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength, &rootsig, ps_name.c_str(), ps_data);
       }
-      SM50_COMPILED_BITCODE ps_bitcode_compiled;
-      SM50GetCompiledBitcode(ps_bitcode, &ps_bitcode_compiled);
-      auto ps_data = WMT::MakeDispatchData(ps_bitcode_compiled.Data, ps_bitcode_compiled.Size);
       auto ps_lib = metal.newLibrary(ps_data, err);
       ps_func = ps_lib.newFunction(ps_name.c_str());
     }
