@@ -89,23 +89,39 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     MTLD3D12CommandQueueImpl *queue;
     std::lock_guard<dxmt::mutex> lock;
     uint64_t seq;
-    InflightCommandBuffer &inflight;
+    InflightCommandBuffer *inflight;
     WMT::Reference<WMT::Object> pool;
 
     CommittingScope(MTLD3D12CommandQueueImpl *queue) :
         queue(queue),
         lock(queue->mutex_commit_),
         seq(queue->inflight_cmdbuf_seq_.load(std::memory_order_relaxed)),
-        inflight(queue->inflight_cmdbuf_pool_[seq % kCommandQueueSize]),
+        inflight(&queue->inflight_cmdbuf_pool_[seq % kCommandQueueSize]),
         pool(WMT::MakeAutoreleasePool()) {
-      inflight.cmdbuf = queue->queue_.commandBuffer();
+      inflight->cmdbuf = queue->queue_.commandBuffer();
     };
 
-    ~CommittingScope() {
-      inflight.cmdbuf.commit();
+    void
+    Commit() {
+      inflight->cmdbuf.commit();
       queue->inflight_cmdbuf_seq_.fetch_add(1, std::memory_order_release);
       queue->inflight_cmdbuf_seq_.notify_one();
       queue->inflight_cmdbuf_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Commits what's encoded so far, so the GPU can start on it, and continues in a new
+    // command buffer.
+    void
+    Rotate() {
+      Commit();
+      queue->inflight_cmdbuf_count_.wait(kCommandQueueSize, std::memory_order_acquire);
+      seq = queue->inflight_cmdbuf_seq_.load(std::memory_order_relaxed);
+      inflight = &queue->inflight_cmdbuf_pool_[seq % kCommandQueueSize];
+      inflight->cmdbuf = queue->queue_.commandBuffer();
+    }
+
+    ~CommittingScope() {
+      Commit();
     }
   };
 
@@ -199,12 +215,23 @@ public:
 
   void STDMETHODCALLTYPE
   ExecuteCommandLists(UINT Count, ID3D12CommandList *const *ppCommandLists) {
+    // Committing every few passes lets the GPU start while the rest is still being
+    // encoded; otherwise a large frame waits for all of its encoding first.
+    static const unsigned chunk_encoders = [] {
+      auto value = env::getEnvVar("DXMT_CHUNK_ENCODERS");
+      return value.empty() ? 8u : (unsigned)std::stoul(value);
+    }();
+    unsigned encoded = 0;
     auto scope = StartCommitting();
-    auto &cmdbuf = scope.inflight.cmdbuf;
     for (unsigned i = 0; i < Count; i++) {
       auto pCommandList = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
       EncoderData *current = pCommandList->entry;
       while (current) {
+        if (chunk_encoders && encoded >= chunk_encoders) {
+          scope.Rotate();
+          encoded = 0;
+        }
+        auto &cmdbuf = scope.inflight->cmdbuf;
         switch (current->type) {
         case EncoderType::Null:
           break;
@@ -339,6 +366,8 @@ public:
           break;
         }
         }
+        if (current->type != EncoderType::Null)
+          encoded++;
         current = current->next;
       }
     }
@@ -353,7 +382,7 @@ public:
   HRESULT STDMETHODCALLTYPE
   Signal(ID3D12Fence *pFence, UINT64 Value) {
     auto scope = StartCommitting();
-    auto &cmdbuf = scope.inflight.cmdbuf;
+    auto &cmdbuf = scope.inflight->cmdbuf;
     static_cast<MTLD3D12Fence *>(pFence)->fence->signal(cmdbuf, Value);
     return S_OK;
   };
@@ -361,7 +390,7 @@ public:
   HRESULT STDMETHODCALLTYPE
   Wait(ID3D12Fence *pFence, UINT64 Value) {
     auto scope = StartCommitting();
-    auto &cmdbuf = scope.inflight.cmdbuf;
+    auto &cmdbuf = scope.inflight->cmdbuf;
     static_cast<MTLD3D12Fence *>(pFence)->fence->wait(cmdbuf, Value);
     return S_OK;
   };
@@ -396,7 +425,7 @@ public:
   HRESULT
   Present(Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after) {
     auto scope = StartCommitting();
-    auto &cmdbuf = scope.inflight.cmdbuf;
+    auto &cmdbuf = scope.inflight->cmdbuf;
 
     auto g = reinterpret_cast<MTLD3D12Resource *>(backbuffer);
     auto &view = g->texture->view(g->texture->fullView);
@@ -412,7 +441,7 @@ public:
       cmdbuf.presentDrawableAfterMinimumDuration(drawable, after);
     else
       cmdbuf.presentDrawable(drawable);
-    scope.inflight.semaphore = hLantecyWaitable;
+    scope.inflight->semaphore = hLantecyWaitable;
 
     return S_OK;
   }

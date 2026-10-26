@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include "util_env.hpp"
 #include "d3d12_device.hpp"
 #include "dxgi_interfaces.h"
 #include "dxgi_object.hpp"
@@ -708,6 +709,11 @@ public:
       hr = DXGI_STATUS_OCCLUDED;
     if (PresentFlags & DXGI_PRESENT_TEST)
       return hr;
+
+    // DXMT_VSYNC=0 ignores the game's sync interval (D3DMetal doesn't pace to it either).
+    static const bool vsync_off = env::getEnvVar("DXMT_VSYNC") == "0";
+    if (vsync_off)
+      SyncInterval = 0;
 
     double vsync_duration = std::max(
         SyncInterval * 1.0 / (preferred_max_frame_rate ? preferred_max_frame_rate : init_refresh_rate_),
