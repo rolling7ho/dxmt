@@ -1571,13 +1571,6 @@ public:
   ) {
     auto sig = static_cast<MTLD3D12CommandSignature *>(pCommandSignature);
     auto arg_buffer = static_cast<MTLD3D12Resource *>(pArgBuffer);
-    static std::atomic<unsigned> logged = 0;
-    if (logged++ < 30)
-      WARN(
-          "ExecuteIndirect: type ", (unsigned)sig->CommandType, ", max ", MaxCommandCount, ", count buffer ",
-          pCountBuffer ? "yes" : "no", ", arg buffer ", (arg_buffer && arg_buffer->buffer) ? "ok" : "MISSING",
-          ", pso ", pso_graphics_ ? "set" : "none", ", root args ", sig->UpdateRootArguments ? 1 : 0
-      );
     if (!arg_buffer || !arg_buffer->buffer)
       return;
     static const bool skip_indirect = env::getEnvVar("DXMT_SKIP_EI") == "1";

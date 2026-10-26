@@ -108,7 +108,7 @@ public:
       std::stringstream args;
       for (unsigned i = 0; i < pDesc->NumArgumentDescs; i++)
         args << " " << (unsigned)pDesc->pArgumentDescs[i].Type;
-      WARN("D3D12CommandSignature: stride ", pDesc->ByteStride, ", arguments", args.str());
+      DEBUG("D3D12CommandSignature: stride ", pDesc->ByteStride, ", arguments", args.str());
     }
 
     source << "struct __attribute__ ((packed)) d3d12_arguments {\n";
