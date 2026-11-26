@@ -1,12 +1,11 @@
-# Archived — moved to the Vodka monorepo
+# DXMT for Vodka
 
-This repository is archived. The patched source now lives in the monorepo:
+Patched DXMT fork used by [Vodka](https://github.com/rolling7ho/Vodka) to build its
+`vodkametal` Direct3D 12 bridge (`scripts/build-vodka-d3d12.sh`).
 
-- https://github.com/rolling7ho/Vodka/tree/main/engine/dxmt-work/dxmt
-- tracked there as a `git subtree` (branch `teardown`)
-- upstream: https://github.com/3Shain/dxmt
-
-Other branches here remain for history. Open issues and PRs in the monorepo.
+- Active branch: `teardown`
+- Application repository: https://github.com/rolling7ho/Vodka
+- Upstream repository: https://github.com/3Shain/dxmt
 
 ---
 
