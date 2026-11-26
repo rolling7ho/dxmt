@@ -58,7 +58,7 @@ DumpFailedShader(const char *stage, const void *bytecode, size_t length, const v
 inline bool
 HashCompileArguments(Sha1HashState &h, const void *pArgs, const char *function_name) {
   // bump when the converter's output changes
-  h.update("vodka-d3d12-1", 13);
+  h.update("gmac-d3d12-1", 12);
   h.update(function_name, strlen(function_name));
   for (auto arg = (const SM50_SHADER_COMPILATION_ARGUMENT_DATA *)pArgs; arg;
        arg = (const SM50_SHADER_COMPILATION_ARGUMENT_DATA *)arg->next) {
